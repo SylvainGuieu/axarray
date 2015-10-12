@@ -97,7 +97,7 @@ def _broadcast_axis(sec, axis, axes1, array_axes, axes2, ia, i):
         #case of integer the axes is lost
         return sec, axes1, array_axes, axes2, ia+1 if ia is not None else None
     if isaxarray(sec):
-        # Take the axes of datax has new axes (array_axes)
+        # Take the axes of axarray has new axes (array_axes)
         # If array_axes already exists check compatibility
         # and return empty list
         if array_axes is not None:
@@ -116,7 +116,7 @@ def _broadcast_axis(sec, axis, axes1, array_axes, axes2, ia, i):
         #
         sec = np.array( sec )
         if array_axes is not None:
-            if array_axes[2]: #axes are given by a previous datax
+            if array_axes[2]: #axes are given by a previous axarray
                 array_axes = (array_axes[0] , max( array_axes[1], len(sec.shape)), True)
             else:
                 array_axes = (array_axes[0]+[axis], max( array_axes[1], len(sec.shape)), False)
@@ -656,7 +656,7 @@ class axarray(np.ndarray):
         """ conveniant function to apply indexes and reducing in one command line 
 
         The goal is to quickly apply indexes and reducing without knowing the structure of the
-        array but only the axis names.
+        array but only the axis names. This function is for convenient use so is a bit durty.  
 
         Args:
             **kwargs :  keyword pair / vaules  can be 
@@ -665,10 +665,15 @@ class axarray(np.ndarray):
                     apply(x_idx = ix,  y_idx = iy) -> will call A[iy,ix]  (if "y"/"x" is name of axis 0/1)
                     apply(x_section=ix , y_section=iy) -> will call A[iy] then index ix with the result.
 
-                    _idx is a much more natural way to do it. 
+                    All the *_idx, if array must be of the same dimension but not with *_section 
+                    
 
-                {axes_name}_reduce = A reduce function with signature (A, axis=axes_name) with A the array 
+                {axes_name}_reduce = f  reduce function with signature f(A, axis=axes_name) with A the array 
                     and axis the axis names
+
+                *_idx are called first then *_section then *_reduce     
+
+                Note: shorter version exists *_i for *_idx, *_s for *_section *_r for *_reduce       
 
             squeeze (Optiona[bool]): squeeze the returned axarray (remove axis with len 1) if True. default False
             aliases (Optional[dict]): A dictionary of aliases, for instance if aliases = {"pix": ("y", "x")} then 
@@ -686,8 +691,21 @@ class axarray(np.ndarray):
             totaly ignored silently.
 
         Examples:
+            >>> from axarray import axarray
             >>> a = axarray( np.random.random(5,10,20), ["time", "y", "x])
-            >>> a.apply(time_reduce=np.mean,  x_id=)   
+            >>> a.apply(time_reduce=np.mean,  x_id=np.s_[0:2])
+            >>> a.apply( time_r = np.mean)  # time_r is a short version of time_reduce   
+
+            >>> a.apply( x_idx=[0,1,2,3], y_idx=[0,1,2,3]).shape
+            (4,)
+            >>> a.apply( x_section=[0,1,2,3], y_section=[0,1,2,3]).shape
+            (4,4)
+
+            >>> a = axarray( np.random.random(5,10,20), ["time", "y", "x],  {"pix":["y", "x"]})
+            # make a function that return a portion of image
+            >>> def mybox(pos=(0,0),size=10):
+                return (slice( pos[0], pos[0]+size), slice( pos[0], pos[0]+size) )
+            >>> a.apply( pix_idx = mybox(size=5) ) # pix_idx is alias of y_idx, x_idx     
 
         """
         squeeze = kwargs.pop("squeeze", False)
@@ -716,16 +734,25 @@ class axarray(np.ndarray):
 
             for ax in self.axes:
                 lazykwargs = "%s_%s"%(ax,funckey)
-                if lazykwargs in kwargs:
-                    args[ax] = kwargs.pop(lazykwargs)
+                shortlazykwargs = "%s_%s"%(ax, funckey[0])
+                if lazykwargs in kwargs and shortlazykwargs in kwargs:
+                    raise ValueError("'%s' and '%s' keywords are the same use only one"%(lazykwargs, shortlazykwargs))                
+                func_val = kwargs.pop(lazykwargs, kwargs.pop(shortlazykwargs, None))
+
+                if func_val is not None:
+                    args[ax] = func_val
 
             ## handle the aliases         
 
             for alias, al_axes in aliases.iteritems():
                 lazykwargs = "%s_%s"%(alias, funckey)
-                if lazykwargs in kwargs:
+                shortlazykwargs = "%s_%s"%(alias, funckey[0])
+                if lazykwargs in kwargs and shortlazykwargs in kwargs:
+                    raise ValueError("'%s' and '%s' keywords are the same use only one"%(lazykwargs, shortlazykwargs))                
 
-                    func_val = kwargs.pop(lazykwargs)
+                func_val = kwargs.pop(lazykwargs, kwargs.pop(shortlazykwargs, None))
+
+                if func_val is not None:
                     if f in ["idx", "section"]:
                         ###
                         #  if pix alias of ["y", "x"]
@@ -733,12 +760,16 @@ class axarray(np.ndarray):
                         if not hasattr(func_val, "__iter__"):
                             func_val = [func_val]
                         for ax,v in zip(al_axes, func_val):
+                            if ax in args and args[ax] != v:
+                                raise TypeError("'%s' alias keyword in conflict with the '%s_%s' keyword"%(lazykwargs, ax, f))
                             args[ax] = v
                     else:
                         ###
                         # if pix alias of ["y", "x"]
                         # then  pix_reduce = mean ->  y_idx=mean, x_idx=mean    
                         for ax in al_axes:
+                            if ax in args and args[ax] != v:
+                                raise TypeError("'%s' alias  keyword in conflict with the '%s_%s' keyword"%(lazykwargs, ax, f))
                             args[ax] = func_val
                    
 
